@@ -28,6 +28,8 @@ SUMMARY_FILE = "summaries.json"
 
 def load_summaries():
     if not os.path.exists(SUMMARY_FILE):
+        with open(SUMMARY_FILE, "w") as f:
+            json.dump({}, f, indent=2)
         return {}
 
     with open(SUMMARY_FILE, "r") as f:
