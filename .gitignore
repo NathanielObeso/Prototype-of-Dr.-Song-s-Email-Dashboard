@@ -2,4 +2,5 @@
 .venv
 credentials.json
 node_modules/
+summaries.json
 token.pickle
