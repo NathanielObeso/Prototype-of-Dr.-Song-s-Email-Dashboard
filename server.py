@@ -21,6 +21,8 @@ from email.mime.base import MIMEBase
 from email import encoders
 import copy
 from dotenv import load_dotenv
+from queue import Queue
+from threading import Thread
 
 from gmail_utils import (
     gmail_authenticate,
@@ -40,8 +42,55 @@ from gmail_utils import (
 app = Flask(__name__)
 CORS(app)
 
+NUM_WORKERS = 3
+
 load_dotenv()
 
+summary_queue = Queue()
+
+summaries = load_summaries()
+
+def summary_worker():
+    while True:
+        gmail_id, body = summary_queue.get()
+
+        try:
+            if gmail_id not in summaries:
+                priority, summary = generate_summary(body)
+
+                summaries[gmail_id] = {
+                    "priority": priority,
+                    "summary": summary,
+                }
+
+            
+                save_summaries(summaries)
+
+                print(f"Generated summary for {gmail_id}")
+
+        except Exception as e:
+            print(e)
+
+        finally:
+            summary_queue.task_done()
+
+for _ in range(NUM_WORKERS):
+    Thread(
+        target=summary_worker,
+        daemon=True
+    ).start()
+
+@app.route("/api/summary/<gmail_id>")
+def get_summary(gmail_id):
+    return jsonify(
+        summaries.get(
+            gmail_id,
+            {
+                "priority": "normal",
+                "summary": None,
+            },
+        )
+    )
 
 def get_service():
     return gmail_authenticate()
@@ -107,14 +156,11 @@ def list_emails():
 
     emails = []
 
-    summaries = load_summaries()
-
-    base_summaries = copy.deepcopy(summaries)
-
     processed = get_or_create_label(service, "Processed")
 
     for thread_ref in result.get("threads", []):
         try:
+            
             thread = (
                 service.users()
                 .threads()
@@ -156,9 +202,15 @@ def list_emails():
 
                 message = msg
 
-                if msg["id"] not in summaries.keys():
-                    key = generate_summary(message)
-                    summaries[msg["id"]] = (key[0], key[1])
+                summary = summaries.get(msg["id"])
+
+                if summary == None:
+                    summary_queue.put((msg["id"], message))
+                    priority = "normal"
+                    summary_text = None
+                else:
+                    priority = summary["priority"]
+                    summary_text = summary["summary"]
 
                 parsed_messages.append({
                     "gmailId": msg["id"],
@@ -181,7 +233,7 @@ def list_emails():
                     ),
                     "date": get_header(headers, "Date"),
 
-                    "priority": summaries[msg["id"]][0],
+                    "priority": priority,
 
                     "read": "UNREAD" not in label_ids,
                     "starred": "STARRED" in label_ids,
@@ -192,7 +244,7 @@ def list_emails():
                     "avatar": initials_from_name(from_name),
 
                     "labelIds": label_ids,
-                    "summary": summaries[msg["id"]][1]
+                    "summary": summary_text
                 })
 
             if not parsed_messages:
@@ -208,9 +260,6 @@ def list_emails():
 
         except Exception as e:
             print(f"Skipping thread {thread_ref.get('id')}: {e}")
-
-    if summaries != base_summaries:
-        save_summaries(summaries)
 
     return jsonify({
         "emails": emails,
@@ -433,6 +482,34 @@ def toggle_star(gmail_id):
         
         return jsonify({"starred": "STARRED" in updated.get("labelIds", [])})
 
+@app.route("/api/emails/<email_id>/archive", methods=["POST"])
+def archive_email(email_id):
+
+    service = get_service()
+
+    service.users().threads().modify(
+    userId="me",
+    id=email_id,
+    body={"removeLabelIds": ["INBOX"]}
+).execute()
+
+    return jsonify({
+        "success": True
+    })
+
+@app.route("/api/emails/<email_id>/trash", methods=["POST"])
+def trash_email(email_id):
+
+    service = get_service()
+
+    service.users().messages().trash(
+        userId="me",
+        id=email_id
+    ).execute()
+
+    return jsonify({
+        "success": True
+    })
 
 if __name__ == "__main__":
     app.run(port=5001, debug=True)

@@ -3,8 +3,8 @@ import { Toaster, toast } from "sonner";
 import {
   Search,
   Star,
-  //Archive,
-  //Trash2,
+  Archive,
+  Trash2,
   RefreshCw,
   ChevronDown,
   Paperclip,
@@ -352,6 +352,8 @@ function DetailPanel({
   onClearReminder,
   onSend,
   onStar,
+  onArchive,
+  onTrash,
   isSent,
 }: {
   email: Email;
@@ -361,6 +363,8 @@ function DetailPanel({
   onClearReminder: (emailId: string) => void;
   onSend: (emailId: string, body: string, to: string, cc: string) => void;
   onStar: (email: Email) => void;
+  onArchive: (email: Email) => void;
+  onTrash: (email: Email) => void;
   isSent: boolean;
 }) {
   const cfg = PRIORITY_CONFIG[email.priority] ?? PRIORITY_CONFIG.normal;
@@ -479,7 +483,7 @@ function DetailPanel({
     onSend(email.gmailId, replyText, toEmail.trim(), ccEmail.trim());
   }
 
-  const summary = email.summary ?? email.preview;
+  const summary = email.summary ?? "Generating AI summary...";
   const action = PRIORITY_ACTIONS[email.priority] ?? PRIORITY_ACTIONS.normal;
 
   return (
@@ -582,12 +586,20 @@ function DetailPanel({
             )}
           </div>
 
-          {/* <button className="p-1.5 rounded hover:bg-accent text-muted-foreground hover:text-foreground transition-colors">
-            <Archive size={13} />
-          </button>
-          <button className="p-1.5 rounded hover:bg-accent text-muted-foreground hover:text-foreground transition-colors">
-            <Trash2 size={13} />
-          </button> */}
+          <button
+  onClick={() => onArchive(email)}
+  className="p-1.5 rounded hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
+  title="Archive"
+>
+  <Archive size={13} />
+</button>
+<button
+  onClick={() => onTrash(email)}
+  className="p-1.5 rounded hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
+  title="Trash"
+>
+  <Trash2 size={13} />
+</button>
           {/* <button className="p-1.5 rounded hover:bg-accent text-muted-foreground hover:text-foreground transition-colors">
             <MoreHorizontal size={13} />
           </button> */}
@@ -1201,6 +1213,37 @@ console.log("Type:", typeof result.nextPageToken);
 
   const selectedEmail = emails.find((e) => e.threadId === selectedId) ?? null;
 
+  useEffect(() => {
+    if (!selectedEmail) return;
+    if (selectedEmail.summary) return;
+
+    const interval = setInterval(async () => {
+        const res = await fetch(
+            `${API_BASE}/api/summary/${selectedEmail.gmailId}`
+        );
+
+        const data = await res.json();
+
+        if (data.summary) {
+            setEmails(prev =>
+                prev.map(email =>
+                    email.gmailId === selectedEmail.gmailId
+                        ? {
+                              ...email,
+                              summary: data.summary,
+                              priority: data.priority,
+                          }
+                        : email
+                )
+            );
+
+            clearInterval(interval);
+        }
+    }, 2000);
+
+    return () => clearInterval(interval);
+}, [selectedEmail]);
+
   const filteredEmails = useMemo(() => {
     let list = emails;
     if (activeTab === "unread") list = list.filter((e) => !e.read);
@@ -1257,6 +1300,71 @@ console.log("Type:", typeof result.nextPageToken);
   
     } catch (err) {
       console.error("Failed to toggle star:", err);
+    }
+  };
+
+  const archiveEmail = async (email: Email) => {
+    try {
+      const response = await fetch(
+        `${API_BASE}/api/emails/${email.gmailId}/archive`,
+        {
+          method: "POST",
+        }
+      );
+  
+      if (!response.ok) {
+        throw new Error("Failed to archive email");
+      }
+  
+      // Remove from frontend immediately
+      setEmails((prev) =>
+        prev.filter((e) => e.gmailId !== email.gmailId)
+      );
+  
+      if (selectedId === email.threadId) {
+        setSelectedId(null);
+      }
+  
+      toast("Email archived", {
+        description: email.subject,
+        duration: 3000,
+      });
+  
+    } catch (err) {
+      console.error("Archive failed:", err);
+      toast.error("Failed to archive email");
+    }
+  };
+
+  const trashEmail = async (email: Email) => {
+    try {
+      const response = await fetch(
+        `${API_BASE}/api/emails/${email.gmailId}/trash`,
+        {
+          method: "POST",
+        }
+      );
+  
+      if (!response.ok) {
+        throw new Error("Failed to trash email");
+      }
+  
+      setEmails((prev) =>
+        prev.filter((e) => e.gmailId !== email.gmailId)
+      );
+  
+      if (selectedId === email.threadId) {
+        setSelectedId(null);
+      }
+  
+      toast("Email moved to trash", {
+        description: email.subject,
+        duration: 3000,
+      });
+  
+    } catch (err) {
+      console.error("Trash failed:", err);
+      toast.error("Failed to move email to trash");
     }
   };
 
@@ -1617,6 +1725,8 @@ console.log("Type:", typeof result.nextPageToken);
             onClearReminder={clearReminder}
             onSend={handleSend}
             onStar={toggleStar}
+            onArchive={archiveEmail}
+            onTrash={trashEmail}
             isSent={sentIds.has(selectedEmail.gmailId)}
           />
         ) : (
